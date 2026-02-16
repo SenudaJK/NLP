@@ -137,24 +137,30 @@ def safe_detect_language(text):
 def translate_samples(df, target_lang='en'):
     """Finds the second most common language and translates samples."""
     lang_counts = df['language'].value_counts()
-    
     # Exclude English and Unknown
     filtered_counts = lang_counts.drop(['en', 'unknown'], errors='ignore')
-    
+
     if filtered_counts.empty:
         print("\nNo foreign languages found to translate.")
         return
 
-    top_foreign_lang = filtered_counts.index[0]
-    count = filtered_counts.iloc[0]
-    
+    # Prefer the second-most frequent foreign language. If only one exists, fall back to the top foreign.
+    if len(filtered_counts) >= 2:
+        target_lang_code = filtered_counts.index[1]
+        count = filtered_counts.iloc[1]
+        which = 'Second-most'
+    else:
+        target_lang_code = filtered_counts.index[0]
+        count = filtered_counts.iloc[0]
+        which = 'Top foreign (only available)'
+
     print(f"\n--- Translation Task ---")
-    print(f"Top foreign language: '{top_foreign_lang}' with {count} entries.")
-    
-    samples = df[df['language'] == top_foreign_lang]['text'].head(3).tolist()
-    translator = GoogleTranslator(source=top_foreign_lang, target=target_lang)
-    
-    print(f"Translating 3 samples to English:")
+    print(f"{which} language selected for translation: '{target_lang_code}' with {count} entries.")
+
+    samples = df[df['language'] == target_lang_code]['text'].head(3).tolist()
+    translator = GoogleTranslator(source=target_lang_code, target=target_lang)
+
+    print(f"Translating up to 3 samples from {target_lang_code} to English:")
     for i, text in enumerate(samples, 1):
         try:
             # Translate first 200 chars to avoid API timeouts
@@ -187,6 +193,20 @@ def visualize_results(df):
     plt.tight_layout()
     plt.savefig('language_distribution_enhanced.png')
     print("\nPlot saved as 'language_distribution_enhanced.png'")
+    
+    # Also provide language statistics (counts + percentages) and save
+    lang_counts = df['language'].value_counts()
+    total = int(lang_counts.sum())
+    stats = lang_counts.rename_axis('language').reset_index(name='count')
+    stats['percent'] = (stats['count'] / total * 100).round(2)
+
+    # Print top languages with percentages
+    print("\nLanguage statistics (top 10):")
+    print(stats.head(10).to_string(index=False))
+
+    # Save full stats to CSV
+    stats.to_csv('language_stats.csv', index=False)
+    print("Saved language statistics to 'language_stats.csv'")
 
 # --- MAIN EXECUTION ---
 def main(input_file, output_file, row_limit):
