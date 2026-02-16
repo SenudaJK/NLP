@@ -24,6 +24,8 @@ This script detects languages in a dataset using the `langdetect` library.
 - Shows progress during processing for large datasets.
 - Prints the second most frequent language with full name (excluding English).
 - Translates up to 3 sample texts from the second most language to English.
+- Automatically infers 'date', 'source', 'country', and 'type' (topic/intent) from text if columns are missing, using NLP techniques (spaCy for entities, regex for dates, keyword matching for topics).
+- Provides language distribution breakdowns by each category and saves them to separate CSV files.
 - Saves the processed data to a new file.
 
 ## Notes for Large Datasets

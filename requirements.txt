@@ -4,3 +4,4 @@ matplotlib
 tqdm
 pycountry
 deep-translator
+spacy
