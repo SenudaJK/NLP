@@ -1,0 +1,6 @@
+langdetect
+pandas
+matplotlib
+tqdm
+pycountry
+deep-translator
