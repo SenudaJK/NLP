@@ -1,9 +1,11 @@
 import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
-from langdetect import detect, LangDetectException
+from langdetect import detect, detect_langs, LangDetectException
 from deep_translator import GoogleTranslator
 import spacy
+import langid
+import math
 import re
 import argparse
 import sys
@@ -194,13 +196,20 @@ def visualize_results(df):
     plt.savefig('language_distribution_enhanced.png')
     print("\nPlot saved as 'language_distribution_enhanced.png'")
     
-    # Also provide language statistics (counts + percentages) and save
+    # Also provide language statistics (counts + percentages + avg confidence) and save
     lang_counts = df['language'].value_counts()
     total = int(lang_counts.sum())
     stats = lang_counts.rename_axis('language').reset_index(name='count')
     stats['percent'] = (stats['count'] / total * 100).round(2)
 
-    # Print top languages with percentages
+    # Add average confidence per language if the column exists
+    if 'lang_confidence' in df.columns:
+        conf_means = df.groupby('language')['lang_confidence'].mean().round(4).reset_index(name='avg_confidence')
+        stats = stats.merge(conf_means, on='language', how='left')
+    else:
+        stats['avg_confidence'] = None
+
+    # Print top languages with percentages and avg confidence
     print("\nLanguage statistics (top 10):")
     print(stats.head(10).to_string(index=False))
 
@@ -231,10 +240,105 @@ def main(input_file, output_file, row_limit):
         print("Inferring topics...")
         df['type'] = list(tqdm(df['text'].apply(infer_topic), total=len(df), desc="Inferring topics"))
 
-    # 2. Detect Languages
+    # 2. Detect Languages (with confidence)
     print("\n--- Detecting Languages ---")
-    # Using apply is cleaner than a manual for loop
-    df['language'] = list(tqdm(df['text'].apply(safe_detect_language), total=len(df), desc="Detecting languages"))
+    languages = []
+    confidences = []
+    raw_logs = []
+    lang_probs_list = []
+    for text in tqdm(df['text'].fillna('').astype(str), total=len(df), desc="Detecting languages"):
+        if not text or len(text.strip()) < 3:
+            languages.append('unknown')
+            confidences.append(0.0)
+            raw_logs.append(None)
+            lang_probs_list.append('[]')
+            continue
+        try:
+            # langid.classify returns (lang, logscore)
+            lang_code, logscore = langid.classify(text[:1000])
+            # convert logscore to a bounded confidence via sigmoid to map to (0,1)
+            try:
+                conf_score = float(1.0 / (1.0 + math.exp(-logscore)))
+            except Exception:
+                conf_score = 0.0
+            languages.append(lang_code)
+            confidences.append(round(conf_score, 4))
+            raw_logs.append(round(float(logscore), 6))
+            # Also compute language probabilities using langdetect.detect_langs (may raise)
+            try:
+                langs = detect_langs(text[:500])
+                # format like [en:0.8571, cy:0.1429]
+                probs_str = '[' + ', '.join(str(l) for l in langs) + ']'
+            except LangDetectException:
+                probs_str = '[]'
+            lang_probs_list.append(probs_str)
+        except Exception:
+            # fallback to previous detector if langid fails
+            try:
+                lang_code = safe_detect_language(text)
+                languages.append(lang_code)
+                confidences.append(0.0)
+                raw_logs.append(None)
+                # try detect_langs fallback
+                try:
+                    langs = detect_langs(text[:500])
+                    probs_str = '[' + ', '.join(str(l) for l in langs) + ']'
+                except LangDetectException:
+                    probs_str = '[]'
+                lang_probs_list.append(probs_str)
+            except Exception:
+                languages.append('unknown')
+                confidences.append(0.0)
+                raw_logs.append(None)
+                lang_probs_list.append('[]')
+
+    df['language'] = languages
+    df['lang_confidence'] = confidences
+    df['lang_logscore'] = raw_logs
+    df['lang_probs'] = lang_probs_list
+
+    # Map raw logscore to human-friendly label ranges
+    def map_logscore_label(score):
+        if score is None:
+            return 'Unknown'
+        try:
+            s = float(score)
+        except Exception:
+            return 'Unknown'
+        # Based on ranges provided by the user (scores are negative log-scores)
+        if -50 <= s <= -1:
+            return 'Very confident'
+        if -200 <= s < -50:
+            return 'Confident'
+        if -500 <= s < -200:
+            return 'Moderate confidence'
+        if s < -500:
+            return 'Weak / uncertain or very long text'
+        # Any unexpected values
+        return 'Unknown'
+
+    df['lang_conf_label'] = df['lang_logscore'].apply(map_logscore_label)
+
+    # Print per-row details summary to console (don't write separate CSV)
+    detail_cols = ['text', 'language', 'lang_logscore', 'lang_confidence', 'lang_conf_label', 'lang_probs']
+    details = df[detail_cols]
+    print("\nPer-row language confidence details (showing first 10 rows):")
+    # Truncate long text for readability
+    to_show = details.copy()
+    to_show['text'] = to_show['text'].astype(str).str.replace('\n', ' ') .str.slice(0,120)
+    print(to_show.head(10).to_string(index=False))
+
+    # Aggregated summary per language — print to console
+    summary = df.groupby('language').agg(
+        count=('language', 'size'),
+        avg_logscore=('lang_logscore', lambda x: round(x.dropna().mean(), 6) if x.dropna().size>0 else None),
+        avg_confidence=('lang_confidence', lambda x: round(x.dropna().mean(), 4) if x.dropna().size>0 else None),
+        most_common_label=('lang_conf_label', lambda x: x.mode().iloc[0] if x.dropna().size>0 else None)
+    ).reset_index()
+    total = int(df.shape[0])
+    summary['percent'] = ((summary['count'] / total) * 100).round(2)
+    print("\nAggregated language confidence summary:")
+    print(summary.to_string(index=False))
 
     # 3. Analyze and Translate
     translate_samples(df)
